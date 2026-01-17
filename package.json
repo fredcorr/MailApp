@@ -1,0 +1,19 @@
+{
+  "name": "mailapp",
+  "version": "1.0.0",
+  "main": "api/submit.js",
+  "scripts": {
+    "start": "node api/submit.js",
+    "dev": "node api/submit.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "express": "^5.2.1",
+    "express-rate-limit": "^8.2.1",
+    "handlebars": "^4.7.8",
+    "nodemailer": "^7.0.12"
+  }
+}

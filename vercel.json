@@ -1,0 +1,14 @@
+{
+  "version": 2,
+  "functions": {
+    "api/submit.js": {
+      "runtime": "nodejs18.x"
+    }
+  },
+  "rewrites": [
+    {
+      "source": "/submit",
+      "destination": "/api/submit"
+    }
+  ]
+}
