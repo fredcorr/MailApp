@@ -1,10 +1,5 @@
 {
   "version": 2,
-  "functions": {
-    "api/submit.ts": {
-      "runtime": "nodejs18.x"
-    }
-  },
   "rewrites": [
     {
       "source": "/submit",
