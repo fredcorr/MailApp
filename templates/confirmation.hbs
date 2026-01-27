@@ -32,32 +32,14 @@
         line-height: 1.6;
         margin: 0 0 16px;
       }
-      .message {
-        border-left: 3px solid #2a5bd7;
-        margin: 18px 0;
-        padding: 12px 16px;
-        background: #f3f6ff;
-        font-size: 14px;
-        white-space: pre-line;
-      }
-      .footer {
-        margin-top: 18px;
-        font-size: 12px;
-        color: #5f6b86;
-      }
     </style>
   </head>
   <body>
     <div class="container">
       <div class="card">
         <h1>Thanks{{#if userName}}, {{userName}}{{/if}}!</h1>
-        <p>We received your message and will get back to you shortly.</p>
-        <p>Here is a copy of what you sent:</p>
-        <div class="message">{{userMessage}}</div>
+        <p>We received your submission and will get back to you shortly.</p>
         <p>If you need to add anything, just reply to this email.</p>
-        <div class="footer">
-          <p>Sent to {{userEmail}}.</p>
-        </div>
       </div>
     </div>
   </body>

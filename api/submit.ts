@@ -4,17 +4,21 @@ import nodemailer from 'nodemailer';
 import handlebars from 'handlebars';
 import fs from 'fs';
 import path from 'path';
+import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 
 const app = express();
 
+// Resolve paths relative to this module (Vercel/ESM friendly).
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+// Basic Express setup: trust proxy for IPs, parse JSON/form bodies with size limits.
 app.set('trust proxy', 1);
 app.use(express.json({ limit: '10kb' }));
 app.use(express.urlencoded({ extended: false, limit: '10kb' }));
 
+// Global rate limit to reduce abuse across both endpoints.
 app.use(
   rateLimit({
     windowMs: 15 * 60 * 1000,
@@ -24,6 +28,7 @@ app.use(
   })
 );
 
+// Preload and compile email templates once at startup.
 const templateDir = path.join(__dirname, '..', 'templates');
 const confirmationTemplate = handlebars.compile(
   fs.readFileSync(path.join(templateDir, 'confirmation.hbs'), 'utf8')
@@ -32,6 +37,7 @@ const notificationTemplate = handlebars.compile(
   fs.readFileSync(path.join(templateDir, 'notification.hbs'), 'utf8')
 );
 
+// Build a nodemailer transport from environment config.
 function buildTransporter() {
   const host = process.env.SMTP_HOST;
   const port = Number(process.env.SMTP_PORT || 587);
@@ -58,10 +64,12 @@ function requireEnv(name: string): string {
   return value;
 }
 
+// Allow bypassing reCAPTCHA in non-production when explicitly enabled.
 function isRecaptchaBypassEnabled() {
   return process.env.RECAPTCHA_BYPASS === 'true' && process.env.NODE_ENV !== 'production';
 }
 
+// Verify reCAPTCHA token with Google's API.
 async function verifyRecaptcha(token: string, remoteIp?: string) {
   const secret = requireEnv('RECAPTCHA_SECRET');
 
@@ -97,43 +105,51 @@ function formatFrom() {
   return fromEmail;
 }
 
-function normalizeString(value?: string) {
-  if (!value) {
-    return '';
+// Constant-time compare to avoid leaking token info.
+function isSameToken(a: string, b: string) {
+  if (a.length !== b.length) {
+    return false;
   }
-  return String(value).trim();
+  return crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b));
 }
 
-function validatePayload({
-  userEmail,
-  userMessage,
-}: {
-  userEmail?: string;
-  userMessage?: string;
-}) {
-  if (!userEmail || !userEmail.includes('@')) {
-    return 'Invalid email address.';
+// Pick the first value when a field can be posted multiple times.
+function pickFirstValue(value: unknown) {
+  if (Array.isArray(value)) {
+    return value[0];
   }
-  if (!userMessage || userMessage.trim().length < 2) {
-    return 'Message is required.';
-  }
-  return null;
+  return value;
 }
 
+// Main submit handler: verify reCAPTCHA, send confirmation + notification.
 async function handleSubmit(req: Request, res: Response) {
   try {
-    const {
-      userName,
-      userEmail,
-      userMessage,
-      userSubject,
-      recaptchaToken,
-    } = req.body || {};
-
-    const validationError = validatePayload({ userEmail, userMessage });
-    if (validationError) {
-      return res.status(400).json({ error: validationError });
+    // Require a shared secret token in the header for server-to-server calls.
+    const expectedToken = requireEnv('SUBMISSION_SECRET');
+    const providedToken = req.header('x-submit-token') || '';
+    if (!providedToken) {
+      return res.status(401).json({ error: 'Missing submission token.' });
     }
+    if (!isSameToken(providedToken, expectedToken)) {
+      return res.status(403).json({ error: 'Invalid submission token.' });
+    }
+
+    // Only accept object-like payloads.
+    if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) {
+      return res.status(400).json({ error: 'Invalid submission payload.' });
+    }
+
+    const body = req.body as Record<string, unknown>;
+    // Support standard reCAPTCHA field names.
+    const recaptchaToken =
+      pickFirstValue(body.recaptchaToken) ||
+      pickFirstValue(body['g-recaptcha-response']);
+
+    // Allow flexible naming for common fields.
+    const rawName = body.userName ?? body.name ?? body.fullName;
+    const rawEmail = body.userEmail ?? body.email;
+    const safeName = typeof rawName === 'string' ? rawName : '';
+    const safeEmail = typeof rawEmail === 'string' ? rawEmail : '';
 
     if (!isRecaptchaBypassEnabled()) {
       if (!recaptchaToken) {
@@ -154,41 +170,46 @@ async function handleSubmit(req: Request, res: Response) {
       }
     }
 
-    const safeName = normalizeString(userName);
-    const safeEmail = normalizeString(userEmail);
-    const safeMessage = normalizeString(userMessage);
-    const safeSubject = normalizeString(userSubject);
+    const excludedKeys = new Set<string>(['recaptchaToken', 'g-recaptcha-response']);
+    const fields = Object.entries(body)
+      .filter(([key]) => !excludedKeys.has(key))
+      .map(([key, value]) => ({ key, value }));
 
+    // Render templates with only the required data.
     const confirmationHtml = confirmationTemplate({
       userName: safeName,
-      userEmail: safeEmail,
-      userMessage: safeMessage,
     });
 
     const notificationHtml = notificationTemplate({
-      userName: safeName || 'Unknown',
-      userEmail: safeEmail,
-      userMessage: safeMessage,
-      userSubject: safeSubject,
+      fields,
+      hasFields: fields.length > 0,
       submittedAt: new Date().toISOString(),
     });
 
     const transporter = buildTransporter();
 
-    await transporter.sendMail({
-      from: formatFrom(),
-      to: safeEmail,
-      subject: process.env.CONFIRM_SUBJECT || 'Thanks for reaching out',
-      html: confirmationHtml,
-    });
+    // Only send a confirmation if we have an email address.
+    if (safeEmail) {
+      await transporter.sendMail({
+        from: formatFrom(),
+        to: safeEmail,
+        subject: process.env.CONFIRM_SUBJECT || 'Thanks for reaching out',
+        html: confirmationHtml,
+      });
+    }
 
+    const notificationSubject =
+      process.env.NOTIFY_SUBJECT ||
+      (safeName || safeEmail
+        ? `New form submission from ${safeName || safeEmail}`
+        : 'New form submission');
+
+    // Always notify the internal recipient.
     await transporter.sendMail({
       from: formatFrom(),
       to: requireEnv('NOTIFY_EMAIL'),
-      replyTo: safeEmail,
-      subject:
-        process.env.NOTIFY_SUBJECT ||
-        `New message from ${safeName || safeEmail}`,
+      replyTo: safeEmail || undefined,
+      subject: notificationSubject,
       html: notificationHtml,
     });
 
@@ -199,9 +220,11 @@ async function handleSubmit(req: Request, res: Response) {
   }
 }
 
+// Accept submissions on both root and /submit paths.
 app.post('/', handleSubmit);
 app.post('/submit', handleSubmit);
 
+// Reject any other method/path with a generic error.
 app.use((req, res) => {
   res.status(405).json({ error: 'Method not allowed.' });
 });
