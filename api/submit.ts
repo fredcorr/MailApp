@@ -64,38 +64,6 @@ function requireEnv(name: string): string {
   return value;
 }
 
-// Allow bypassing reCAPTCHA in non-production when explicitly enabled.
-function isRecaptchaBypassEnabled() {
-  return process.env.RECAPTCHA_BYPASS === 'true' && process.env.NODE_ENV !== 'production';
-}
-
-// Verify reCAPTCHA token with Google's API.
-async function verifyRecaptcha(token: string, remoteIp?: string) {
-  const secret = requireEnv('RECAPTCHA_SECRET');
-
-  const body = new URLSearchParams({
-    secret,
-    response: token,
-  });
-
-  if (remoteIp) {
-    body.append('remoteip', remoteIp);
-  }
-
-  const response = await fetch('https://www.google.com/recaptcha/api/siteverify', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body,
-  });
-
-  if (!response.ok) {
-    throw new Error('reCAPTCHA verification failed');
-  }
-
-  const data = await response.json();
-  return data.success === true;
-}
-
 function formatFrom() {
   const fromEmail = requireEnv('FROM_EMAIL');
   const fromName = process.env.FROM_NAME;
@@ -113,15 +81,7 @@ function isSameToken(a: string, b: string) {
   return crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b));
 }
 
-// Pick the first value when a field can be posted multiple times.
-function pickFirstValue(value: unknown) {
-  if (Array.isArray(value)) {
-    return value[0];
-  }
-  return value;
-}
-
-// Main submit handler: verify reCAPTCHA, send confirmation + notification.
+// Main submit handler: verify shared token, send confirmation + notification.
 async function handleSubmit(req: Request, res: Response) {
   try {
     // Require a shared secret token in the header for server-to-server calls.
@@ -140,35 +100,11 @@ async function handleSubmit(req: Request, res: Response) {
     }
 
     const body = req.body as Record<string, unknown>;
-    // Support standard reCAPTCHA field names.
-    const recaptchaToken =
-      pickFirstValue(body.recaptchaToken) ||
-      pickFirstValue(body['g-recaptcha-response']);
-
     // Allow flexible naming for common fields.
     const rawName = body.userName ?? body.name ?? body.fullName;
     const rawEmail = body.userEmail ?? body.email;
     const safeName = typeof rawName === 'string' ? rawName : '';
     const safeEmail = typeof rawEmail === 'string' ? rawEmail : '';
-
-    if (!isRecaptchaBypassEnabled()) {
-      if (!recaptchaToken) {
-        return res.status(400).json({ error: 'Missing reCAPTCHA token.' });
-      }
-
-      const forwardedFor = Array.isArray(req.headers['x-forwarded-for'])
-        ? req.headers['x-forwarded-for'][0]
-        : req.headers['x-forwarded-for'];
-
-      const recaptchaOk = await verifyRecaptcha(
-        recaptchaToken,
-        req.ip || forwardedFor
-      );
-
-      if (!recaptchaOk) {
-        return res.status(400).json({ error: 'reCAPTCHA validation failed.' });
-      }
-    }
 
     const excludedKeys = new Set<string>(['recaptchaToken', 'g-recaptcha-response']);
     const fields = Object.entries(body)
